@@ -1,0 +1,5 @@
+.worktrees/
+.DS_Store
+
+# Databricks CLI bundle state (per-target deployment metadata).
+.databricks/

@@ -1,0 +1,94 @@
+{
+  // App config (JSONC). Loaded by server/server.ts loadAppConfig.
+  //
+  // ${VAR} / ${VAR:default} placeholders are substituted against process.env
+  // BEFORE JSON parsing. So catalog/schema/resource-IDs live in env (one
+  // source of truth), NOT as literals here — set them in `.env` (local dev +
+  // preview) or via the DAB (deployed; finalize_app.sh writes app.yaml's env).
+  //   - `${VAR}`           → empty string if unset
+  //   - `${VAR:default}`   → `default` if unset
+  // Empty values degrade gracefully (inert deep-link tile / skipped feature);
+  // the app still boots. See server.ts loadAppConfig for the substitution +
+  // the boot warnings.
+  //
+  // CUSTOMIZE per demo: branding, assistantScript, and data.tables names
+  // below. Everything else is env-driven and shouldn't need editing.
+
+  // ─ Agent backend: set ONE (via env). masEndpointName → ask_mas tool.
+  //   genieSpaceId → swap to askGenieTool in server/agent/<name>.ts makeTools.
+  //   Both empty → no data tool → agent can't answer "why" questions.
+  //   Template ships with MAS; for a Genie-only demo set GENIE_SPACE_ID, leave
+  //   MAS_ENDPOINT_NAME empty, and swap ask_mas → askGenieTool in refundops.ts
+  //   makeTools. For both: register both with distinct names + tell the model
+  //   in instructions when to prefer each.
+  "masEndpointName": "${MAS_ENDPOINT_NAME:}",
+  "genieSpaceId":    "${GENIE_SPACE_ID:}",
+
+  // Agent LLM. Needs the Responses API (openai/v1/responses). databricks-gpt-5-4
+  // is the baseline; a newer GPT endpoint with /responses enabled works too.
+  // Non-Responses models (Claude etc.) 400 BAD_REQUEST.
+  "agentModel": "databricks-gpt-5-4",
+
+  // MLflow trace path. Empty → chat shows "Trace pending…". Auto-created
+  // at boot via lib/mlflow.ts.
+  "mlflowExperimentId": "",
+  "agentMlflowExperimentPath": "${AGENT_MLFLOW_EXPERIMENT_PATH:}",
+
+  // Embedded AI/BI dashboard (UUID). Empty → drop the /dashboard route +
+  // sidebar entry. Also a tile on /platform.
+  "dashboardId": "${DASHBOARD_ID:}",
+
+  // Workspace resource IDs → deep-link URLs via /api/resources (PlatformDiagram
+  // on /platform). Empty id → tile renders inert.
+  "pipelineId":        "${PIPELINE_ID:}",
+  "warehouseId":       "${WAREHOUSE_ID:}",
+  "kaEndpointName":    "${KA_ENDPOINT_NAME:}",
+  "lakebaseProjectId": "${LAKEBASE_PROJECT_ID:}",
+  "appUrl":            "${APP_URL:}",
+  "pdfVolumePath":     "/Volumes/${DEMO_CATALOG}/${DEMO_SCHEMA}/raw_data",
+
+  // Delta source for boot-time Lakebase mirror (server/db/sync.ts). catalog +
+  // schema come from env; the table NAMES map logical→gold table:
+  //   plants            → gold_plant_scorecard   (map + KPIs)
+  //   misses            → gold_open_misses       (the write surface)
+  //   correctiveActions → gold_corrective_actions (pre-seeded history)
+  "data": {
+    "catalog": "${DEMO_CATALOG}",
+    "schema":  "${DEMO_SCHEMA}",
+    "tables": {
+      "plants":            "gold_plant_scorecard",
+      "misses":            "gold_open_misses",
+      "correctiveActions": "gold_corrective_actions"
+    }
+  },
+
+  // Surfaces in dock header + page titles.
+  "branding": {
+    "appName": "Plant Attainment Control Tower"
+  },
+
+  // Dock's "Suggested next" chip walks this list. Step N unlocks once the
+  // previous assistant message contains any triggerAfter[] substring.
+  // Picker: client/src/chat/script.ts. The scripted Maya flow:
+  //   1. Why did attainment drop → MAS/Genie → 3 plants, Mechanical Downtime.
+  //   2. Look at the Plano open backlog → backlog_summary.
+  //   3. Assign corrective actions → draft + STOP for approval.
+  //   4. Approve → assign_corrective_actions_batch (the live cascade).
+  "assistantScript": [
+    {
+      "prompt": "Why did attainment drop about two weeks ago?"
+    },
+    {
+      "prompt": "Show me the open-miss backlog for Plano (PLNT-07) — how many are open and by what reason?",
+      "triggerAfter": ["plano", "plnt-07", "tulsa", "fresno", "mechanical", "backlog"]
+    },
+    {
+      "prompt": "Draft corrective actions for the Plano backlog — one per reason code, with owners and target dates. Show me before assigning.",
+      "triggerAfter": ["open", "backlog", "reason", "misses"]
+    },
+    {
+      "prompt": "Approved — assign these corrective actions to all the open misses at Plano.",
+      "triggerAfter": ["draft", "reply", "assign", "target date", "owner"]
+    }
+  ]
+}

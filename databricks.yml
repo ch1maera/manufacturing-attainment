@@ -1,0 +1,310 @@
+# Acme Manufacturing — Plant Attainment Control Tower : Databricks Asset Bundle.
+#
+# GENERIC TEMPLATE BRANCH. This file deploys the demo into a NEW customer
+# workspace with zero local scripts, zero Node/npm/python/psql on the
+# customer's machine. See CUSTOMER_DEPLOY.md for the full walkthrough.
+#
+# Provisions (via `bundle deploy`): schema + raw_data volume + SDP pipeline +
+# Databricks App shell (pre-built dist/ ships in this package — no local
+# build step). Then the setup job (`bundle run plant_setup`) fills them in:
+# generate_data → run_pipeline → deploy_genie → deploy_mas → grant_app_uc →
+# grant_lakebase_app → export_resources → finalize_app. Everything from
+# "grant_lakebase_app" onward runs SERVER-SIDE inside the job — no
+# customer-run script, no `psql`, no local Python.
+#
+# ── 2-command deploy (see CUSTOMER_DEPLOY.md for the full prerequisite +
+#    Lakebase UI setup you do BEFORE these) ─────────────────────────────────
+#   1. databricks bundle deploy -t customer --var catalog=… --var schema=… \
+#        --var warehouse_id=… --var lakebase_project_id=… \
+#        --var lakebase_branch_id=… --var lakebase_database_name=… \
+#        --var lakebase_database_id=…
+#   2. databricks bundle run plant_setup -t customer --var … (same --var list)
+#
+# Why the app env is finalized INSIDE the job (finalize_app task): the Genie /
+# MAS endpoint IDs only exist AFTER the setup job's SDK tasks run, so the
+# bundle can't know them at deploy time. finalize_app reads them via the
+# job's own task values (no external harvesting needed) and redeploys the
+# app — all automatically, as the last step of `bundle run plant_setup`.
+#
+# ⚠️ NEVER `databricks apps update --json` a deployed app out of band — `update`
+#    replaces the whole app spec and silently drops the `resources` bindings.
+
+bundle:
+  name: plant-attainment-control-tower
+
+variables:
+  catalog:
+    description: "Unity Catalog for demo resources"
+  schema:
+    description: "Schema within the catalog (created by this bundle)"
+  warehouse_id:
+    description: "SQL Warehouse ID — powers the Genie space + app analytics"
+
+  # ── App + Lakebase ─────────────────────────────────────────────────────
+  app_name:
+    description: "Workspace app name (must be unique per workspace)"
+    default: "plant-attainment-control-tower"
+  lakebase_project_id:
+    description: "Lakebase project — create it in the Lakebase UI first (see CUSTOMER_DEPLOY.md)"
+    default: "plant-attainment"
+  lakebase_branch_id:
+    description: "Lakebase branch within the project (the default branch created with a new project is 'production')"
+    default: "production"
+  lakebase_database_name:
+    description: "Postgres database name you created in the Lakebase UI. Convention: dbgen_<demo>"
+    default: "dbgen_attainment"
+  lakebase_database_id:
+    description: |
+      Lakebase database resource ID — the slug in the App's `postgres` binding
+      path. Convention: `db-` + database_name with underscores → hyphens
+      (e.g. database name `dbgen_attainment` → id `db-dbgen-attainment`). Shown in the
+      Lakebase UI when you create the database.
+    default: "db-dbgen-attainment"
+
+  # NOTE: the app's runtime env vars are NOT defined here. They're assembled
+  # by the setup job's `finalize_app` task after the OTHER setup tasks run
+  # (it needs the Genie/MAS IDs those tasks create, which the bundle can't
+  # know at deploy time) — one source of truth for app env, just resolved
+  # server-side instead of by a local script.
+
+sync:
+  include:
+    - "src/**"
+    - "pipeline/**"          # SDP SQL libraries
+    - "data_generation/**"   # synthetic data generator
+    - "app/dist/**"          # pre-built server bundle (committed on this branch)
+    - "app/client/dist/**"   # pre-built client bundle (committed on this branch)
+    - "app/drizzle/**"       # committed Drizzle SQL migrations
+  exclude:
+    - "app/node_modules/**"
+    - "app/.venv/**"
+    - "app/.env"
+    - "app/.env.*"
+    - "app/.preview.pgid"
+    - "app/.DS_Store"
+    - "app/playwright-report/**"
+    - "app/test-results/**"
+    - "app/tests/**"
+
+targets:
+  customer:
+    default: true
+    mode: production
+    # No `workspace.host` pin here — the workspace is resolved from
+    # whichever profile you pass via `databricks auth login` /
+    # `--profile` / `DATABRICKS_CONFIG_PROFILE`. See CUSTOMER_DEPLOY.md.
+    workspace:
+      # `mode: production` requires an explicit root_path (so two people
+      # deploying this bundle in the same workspace don't collide). Uses
+      # the deploying user's own identity — nothing customer-specific to
+      # fill in here.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+resources:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Schema + volume
+  # ──────────────────────────────────────────────────────────────────────────
+  schemas:
+    demo_schema:
+      name: ${var.schema}
+      catalog_name: ${var.catalog}
+      comment: "Plant-attainment demo data"
+
+  volumes:
+    raw_data:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: "raw_data"
+      volume_type: "MANAGED"
+      comment: "Raw Excel-tracker parquet datasets (build_plan, adherence_miss, …)"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SDP pipeline — silver + gold materialized views over the raw volume.
+  # ──────────────────────────────────────────────────────────────────────────
+  pipelines:
+    plant_attainment:
+      name: "[${bundle.target}] Plant Attainment Pipeline"
+      catalog: ${resources.schemas.demo_schema.catalog_name}
+      target: ${resources.schemas.demo_schema.name}
+      serverless: true
+      photon: true
+      channel: current
+      # Pipeline configuration → surfaces as ${catalog}/${schema} substitutions in
+      # the SQL (used to build the /Volumes/<catalog>/<schema>/raw_data/... paths
+      # that read_files() reads). SQL can't reference bundle vars directly, so
+      # these are passed through the pipeline spec instead of being hardcoded.
+      configuration:
+        catalog: ${resources.schemas.demo_schema.catalog_name}
+        schema: ${resources.schemas.demo_schema.name}
+      libraries:
+        - file: { path: ./pipeline/silver_build_plan.sql }
+        - file: { path: ./pipeline/silver_adherence_miss.sql }
+        - file: { path: ./pipeline/silver_plant_kpi.sql }
+        - file: { path: ./pipeline/gold_attainment_daily.sql }
+        - file: { path: ./pipeline/gold_attainment_by_sku.sql }
+        - file: { path: ./pipeline/gold_miss_pareto.sql }
+        - file: { path: ./pipeline/gold_plant_scorecard.sql }
+        - file: { path: ./pipeline/gold_open_misses.sql }
+        - file: { path: ./pipeline/gold_corrective_actions.sql }
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Databricks App (Attainment Control Tower UI + agent chat).
+  # ──────────────────────────────────────────────────────────────────────────
+  apps:
+    plant_attainment_app:
+      name: ${var.app_name}
+      description: "Plant Attainment Control Tower"
+      source_code_path: ./app
+      lifecycle:
+        prevent_destroy: true   # stateful — don't let `bundle destroy` nuke it
+      # OBO scopes for the user token (x-forwarded-access-token). API-recognized
+      # scope STRINGS (distinct vocabulary from app.yaml's user_authorization.scopes
+      # — set both; the rendered terraform's user_api_scopes take effect at runtime).
+      user_api_scopes:
+        - serving.serving-endpoints   # /serving-endpoints/* (MAS agent LLM)
+        - ai-gateway                  # ⚠️ REQUIRED for the Responses API — routes
+                                      # through AI Gateway; without it the OBO
+                                      # token is rejected "403 Invalid Token".
+        - dashboards.genie            # ask_mas → Genie
+        - sql                         # SQL warehouse
+        - sql.statement-execution     # synchronous SQL exec
+        - postgres                    # Lakebase
+        - catalog.catalogs:read
+        - catalog.schemas:read
+        - catalog.tables:read
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: postgres
+          postgres:
+            branch: projects/${var.lakebase_project_id}/branches/${var.lakebase_branch_id}
+            database: projects/${var.lakebase_project_id}/branches/${var.lakebase_branch_id}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Setup job — runs AFTER `bundle deploy` creates the resource shells.
+  # ──────────────────────────────────────────────────────────────────────────
+  jobs:
+    plant_setup:
+      name: "[${bundle.target}] Plant Attainment Setup"
+      description: "data → pipeline → genie → mas → app grants → finalize app"
+      tasks:
+        - task_key: generate_data
+          notebook_task:
+            notebook_path: ./data_generation/generate_data.py
+            base_parameters:
+              catalog: ${resources.schemas.demo_schema.catalog_name}
+              schema:  ${resources.schemas.demo_schema.name}
+          environment_key: sdk_default
+
+        - task_key: run_pipeline
+          depends_on: [{ task_key: generate_data }]
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.plant_attainment.id}
+
+        - task_key: deploy_genie
+          depends_on: [{ task_key: run_pipeline }]
+          notebook_task:
+            notebook_path: ./src/deploy/deploy_genie.py
+            base_parameters:
+              catalog:      ${resources.schemas.demo_schema.catalog_name}
+              schema:       ${resources.schemas.demo_schema.name}
+              warehouse_id: ${var.warehouse_id}
+          environment_key: sdk_latest
+
+        - task_key: deploy_mas
+          depends_on: [{ task_key: deploy_genie }]
+          notebook_task:
+            notebook_path: ./src/deploy/deploy_mas.py
+            base_parameters:
+              catalog:        ${resources.schemas.demo_schema.catalog_name}
+              schema:         ${resources.schemas.demo_schema.name}
+              genie_space_id: "{{tasks.deploy_genie.values.genie_space_id}}"
+          environment_key: sdk_latest
+
+        # Grant the app SP UC read privileges. Without these the app's first
+        # /api/config hits INSUFFICIENT_PERMISSIONS. (Distinct from
+        # grant_lakebase_app, which grants on the Postgres plane.)
+        - task_key: grant_app_uc
+          depends_on: [{ task_key: run_pipeline }]
+          notebook_task:
+            notebook_path: ./src/deploy/grant_app_uc.py
+            base_parameters:
+              catalog:  ${resources.schemas.demo_schema.catalog_name}
+              schema:   ${resources.schemas.demo_schema.name}
+              app_name: ${var.app_name}
+          environment_key: sdk_latest
+
+        # Idempotent safety-net GRANT on the Postgres plane — no `psql`, runs
+        # server-side via the SDK + psycopg2. Only needs the app (created by
+        # `bundle deploy`) to exist, so it has no upstream dependency and runs
+        # in parallel with the rest of the job. See CUSTOMER_DEPLOY.md
+        # troubleshooting for the manual Lakebase SQL Editor fallback if this
+        # ever needs to be re-run by hand.
+        - task_key: grant_lakebase_app
+          notebook_task:
+            notebook_path: ./src/deploy/grant_lakebase_app.py
+            base_parameters:
+              app_name:                ${var.app_name}
+              lakebase_project_id:     ${var.lakebase_project_id}
+              lakebase_branch_id:      ${var.lakebase_branch_id}
+              lakebase_database_name:  ${var.lakebase_database_name}
+          environment_key: sdk_latest
+
+        # Exit a JSON manifest of every resolved ID — useful as a record even
+        # though finalize_app (below) no longer needs to read it back
+        # out-of-band (it reads the same task values directly).
+        - task_key: export_resources
+          depends_on: [{ task_key: deploy_mas }, { task_key: grant_app_uc }]
+          notebook_task:
+            notebook_path: ./src/deploy/export_resources.py
+            base_parameters:
+              app_name:          ${var.app_name}
+              catalog:           ${resources.schemas.demo_schema.catalog_name}
+              schema:            ${resources.schemas.demo_schema.name}
+              pipeline_id:       ${resources.pipelines.plant_attainment.id}
+              warehouse_id:      ${var.warehouse_id}
+              genie_space_id:    "{{tasks.deploy_genie.values.genie_space_id}}"
+              mas_endpoint_name: "{{tasks.deploy_mas.values.mas_endpoint_name}}"
+          environment_key: sdk_latest
+
+        # Final task: render app.yaml's env block from the now-known
+        # Genie/MAS IDs, redeploy the app, and grant the app SP the
+        # workspace-level permissions it needs (pipeline CAN_VIEW, MAS
+        # endpoint CAN_QUERY, Genie space CAN_RUN). Replaces the local
+        # finalize_app.sh entirely — runs automatically, no customer command.
+        - task_key: finalize_app
+          depends_on: [{ task_key: deploy_mas }, { task_key: grant_app_uc }]
+          notebook_task:
+            notebook_path: ./src/deploy/finalize_app.py
+            base_parameters:
+              bundle_name:       ${bundle.name}
+              bundle_target:     ${bundle.target}
+              app_name:          ${var.app_name}
+              catalog:           ${resources.schemas.demo_schema.catalog_name}
+              schema:            ${resources.schemas.demo_schema.name}
+              pipeline_id:       ${resources.pipelines.plant_attainment.id}
+              warehouse_id:      ${var.warehouse_id}
+              genie_space_id:    "{{tasks.deploy_genie.values.genie_space_id}}"
+              mas_endpoint_name: "{{tasks.deploy_mas.values.mas_endpoint_name}}"
+          environment_key: sdk_latest
+
+      # Serverless environments. `client: "4"` is the standard tier. The
+      # agent-bricks APIs (Genie/MAS) need databricks-sdk>=0.114.0; psycopg2
+      # is needed by grant_lakebase_app to issue GRANTs with no local `psql`.
+      environments:
+        - environment_key: sdk_default
+          spec:
+            client: "4"
+            dependencies:
+              - "faker"
+              - "numpy"
+              - "pandas"
+        - environment_key: sdk_latest
+          spec:
+            client: "4"
+            dependencies:
+              - "databricks-sdk>=0.114.0"
+              - "psycopg2-binary>=2.9"

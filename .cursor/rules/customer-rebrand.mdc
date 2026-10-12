@@ -1,0 +1,21 @@
+---
+description: How to rebrand this Plant Attainment demo for a specific customer
+alwaysApply: true
+---
+
+# Customer rebrand
+
+This checkout is the **generic template** (`generic` branch). Identity in
+the repo is the fictional placeholder **Acme Manufacturing**.
+
+When asked to brand or customize for a customer:
+
+1. Read and follow `AGENTS.md` end to end. Do not skip the file checklist.
+2. Branch from `generic`. Do not pile a new customer onto `customer-release`.
+3. Keep the demo arc: 3 laggard plants, ~2-week miss spike, two dominant
+   reason codes, open backlog, agent drafts CAs then **stops for approval**.
+4. Do not invent plants, dollars, logos, or product lines. Ask if missing.
+5. After edits, grep for leftover `Acme` / `example.com` / `PlantOps` and
+   update `app/tests/smoke.spec.ts` plus rebuilt `app/client/dist` and
+   `app/dist`.
+6. Never commit `app/.env`.

@@ -1,0 +1,64 @@
+# Databricks App manifest — read by the runtime when the container starts.
+#
+# CUSTOMER-RELEASE BRANCH: app.yaml is GENERATED from app.yaml.template by
+# the setup job's `finalize_app` task (src/deploy/finalize_app.py) — it runs
+# automatically as part of `databricks bundle run plant_setup`, no customer
+# script involved. Edit app.yaml.template, not this file directly — any
+# edits here are overwritten the next time the setup job runs.
+#
+# Rendering keeps this header + command + scopes + binding-derived env, then
+# appends the plain-value env vars (DEMO_CATALOG, DASHBOARD_ID,
+# GENIE_SPACE_ID, …) resolved by the setup job. Plain values live in exactly
+# one place (finalize_app.py), assembled after the Genie/MAS tasks run — the
+# bundle can't know those IDs at deploy time. Binding-derived vars
+# (DATABRICKS_WAREHOUSE_ID, LAKEBASE_ENDPOINT) stay here always.
+#
+# Lifecycle on the Apps container (in order):
+#   1. `npm install` against the shipped lockfile.
+#   2. `npm run build` (no-op echo — dist/ + client/dist/ are pre-built and
+#      shipped in this package; there is no local build step).
+#   3. The `command:` below starts the server.
+#
+# Until the setup job runs once, DEMO_CATALOG/GENIE_SPACE_ID/etc. below are
+# empty — the app still boots (degrades gracefully: no dashboard tile, no
+# ask_mas tool, "Trace pending…") until `bundle run plant_setup` finishes.
+
+command: ['node', '--env-file-if-exists=.env', 'dist/server.js']
+
+# Scopes minted into the user's OBO token (x-forwarded-access-token).
+user_authorization:
+  scopes:
+    - model-serving      # OpenAI Agents loop hits /serving-endpoints/responses
+    - genie              # ask_mas → Genie space
+    - sql                # warehouse-backed analytics queries
+    - postgres           # Lakebase pool
+    - ai-gateway         # AI Gateway routing for the Responses API
+    - catalog.catalogs:read
+    - catalog.schemas:read
+    - catalog.tables:read
+
+env:
+  - name: NODE_ENV
+    value: "production"
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: postgres
+  - name: DEMO_CATALOG
+    value: ""
+  - name: DEMO_SCHEMA
+    value: ""
+  - name: DASHBOARD_ID
+    value: ""
+  - name: PIPELINE_ID
+    value: ""
+  - name: AGENT_MLFLOW_EXPERIMENT_PATH
+    value: ""
+  - name: GENIE_SPACE_ID
+    value: ""
+  - name: KA_ENDPOINT_NAME
+    value: ""
+  - name: MAS_ENDPOINT_NAME
+    value: ""

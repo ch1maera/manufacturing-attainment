@@ -1,0 +1,13 @@
+{
+  "company": "Acme Manufacturing",
+  "palette": [
+    "#0033A0",
+    "#E31837",
+    "#FFC72C",
+    "#0B1B3A",
+    "#FFFFFF"
+  ],
+  "website": "https://www.example.com",
+  "company_logo": "company_logo.jpg",
+  "company_official_website_screenshot": null
+}

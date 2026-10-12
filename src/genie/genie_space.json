@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      {"id": "10000000000000000000000000000001", "question": ["What is company-wide attainment over the last 4 weeks, by week?"]},
+      {"id": "10000000000000000000000000000002", "question": ["Why did attainment drop two weeks ago?"]},
+      {"id": "10000000000000000000000000000003", "question": ["Which plants have the lowest attainment right now?"]},
+      {"id": "10000000000000000000000000000004", "question": ["Rank adherence misses by reason code for the last 2 weeks."]},
+      {"id": "10000000000000000000000000000005", "question": ["How many open misses does Plano have and what is the miss volume?"]},
+      {"id": "10000000000000000000000000000006", "question": ["Show attainment by SKU category this month."]}
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_attainment_by_sku"},
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_attainment_daily"},
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_corrective_actions"},
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_miss_pareto"},
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_open_misses"},
+      {"identifier": "solution_builder.demo_plant_attainment_control_tower.gold_plant_scorecard"}
+    ]
+  },
+  "instructions": {
+    "example_question_sqls": [
+      {
+        "id": "20000000000000000000000000000001",
+        "question": ["What is company-wide attainment over the last 4 weeks, by week?"],
+        "sql": ["SELECT date_trunc('week', plan_date) AS week,\n", "  ROUND(SUM(actual_units) / SUM(planned_units), 3) AS attainment_pct,\n", "  ROUND(AVG(adherence_pct), 3) AS adherence_pct\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_attainment_daily\n", "WHERE plan_date >= date_sub(current_date(), 28)\n", "GROUP BY week ORDER BY week"]
+      },
+      {
+        "id": "20000000000000000000000000000002",
+        "question": ["Why did attainment drop two weeks ago?", "Which plants and reasons drove the recent miss spike?"],
+        "sql": ["SELECT plant_name, reason_code, SUM(miss_count) AS misses, SUM(miss_units) AS units\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_miss_pareto\n", "WHERE miss_date >= date_sub(current_date(), 21)\n", "GROUP BY plant_name, reason_code\n", "ORDER BY misses DESC LIMIT 20"]
+      },
+      {
+        "id": "20000000000000000000000000000003",
+        "question": ["Which plants have the lowest attainment right now?"],
+        "sql": ["SELECT plant_name, ROUND(attainment_pct, 3) AS attainment_pct, open_miss_count, open_miss_units\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_plant_scorecard\n", "ORDER BY attainment_pct ASC LIMIT 5"]
+      },
+      {
+        "id": "20000000000000000000000000000004",
+        "question": ["Rank adherence misses by reason code for the last 2 weeks."],
+        "sql": ["SELECT reason_code, SUM(miss_count) AS misses, SUM(miss_units) AS units\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_miss_pareto\n", "WHERE miss_date >= date_sub(current_date(), 14)\n", "GROUP BY reason_code ORDER BY misses DESC"]
+      },
+      {
+        "id": "20000000000000000000000000000005",
+        "question": ["How many open misses does Plano have and what is the miss volume?"],
+        "sql": ["SELECT plant_name, COUNT(*) AS open_misses, SUM(miss_units) AS open_units\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_open_misses\n", "WHERE plant_name = 'Plano Plant'\n", "GROUP BY plant_name"]
+      },
+      {
+        "id": "20000000000000000000000000000006",
+        "question": ["Show attainment by SKU category this month."],
+        "sql": ["SELECT category, ROUND(SUM(actual_units) / SUM(planned_units), 3) AS attainment_pct\n", "FROM solution_builder.demo_plant_attainment_control_tower.gold_attainment_by_sku\n", "WHERE plan_date >= date_trunc('month', current_date())\n", "GROUP BY category ORDER BY attainment_pct ASC"]
+      }
+    ],
+    "text_instructions": [
+      {
+        "id": "30000000000000000000000000000001",
+        "content": [
+          "You are the attainment analyst for Acme Manufacturing, a 20-plant manufacturer.\n",
+          "Attainment % = SUM(actual_units)/SUM(planned_units). Adherence % = AVG(adherence_pct), the share of planned builds completed on-time.\n",
+          "Company-wide = aggregate across all 20 plants. 'Two weeks ago' = the week around current_date() - 14 days.\n",
+          "Reason codes are exactly: Changeover, Material Shortage, Mechanical Downtime, Quality Hold, Labor.\n",
+          "The recent miss spike is concentrated at Plano (PLNT-07), Tulsa (PLNT-12), and Fresno (PLNT-15), driven by Mechanical Downtime and Material Shortage. Those 3 plants dipped to ~82% attainment while the company roll-up stayed near ~94% (the 17 healthy plants dilute the 3).\n",
+          "Attainment/adherence trends and company roll-up: use gold_attainment_daily (one row per plant per day, has plant_name and region). By SKU: use gold_attainment_by_sku.\n",
+          "Ranking misses (Pareto): use gold_miss_pareto (miss_count, miss_units by miss_date, plant, reason_code). Order by miss_count or miss_units DESC.\n",
+          "Current plant health / lowest attainment / open backlog counts: use gold_plant_scorecard (one row per plant, recent 14-day window, includes lat/lng, open_miss_count, maintenance_spend_usd).\n",
+          "The open-miss backlog detail (no corrective action yet): use gold_open_misses. Pre-seeded corrective-action history: gold_corrective_actions.\n",
+          "Lead with the number, then the breakdown by plant / reason / SKU."
+        ]
+      }
+    ]
+  }
+}
